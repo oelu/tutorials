@@ -41,9 +41,3 @@ Follow instructions at: https://www.sublimetext.com/docs/3/linux_repositories.ht
 ```
 PasswordAuthentication no
 ```
-
-* Disable remote login for `root` in `/etc/ssh/sshd_config`.
-
-```
-PermitRootLogin no
-```
