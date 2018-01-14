@@ -33,3 +33,17 @@ Follow instructions at: https://www.sublimetext.com/docs/3/linux_repositories.ht
 6. `dpkg-reconfigure openssh-server`
 7. `service ssh restart`
 8. `update-rc.d -f ssh enable 2 3 4 5`
+
+### SSHD configuration
+
+* Disable password authentication in `/etc/ssh/sshd_config`.
+
+```
+PasswordAuthentication no
+```
+
+* Disable remote login for `root` in `/etc/ssh/sshd_config`.
+
+```
+PermitRootLogin no
+```
