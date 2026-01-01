@@ -346,43 +346,38 @@ This section explains how Ollama works internally and how it leverages M1 hardwa
 
 Ollama uses a client-server architecture where the server manages model loading, inference, and concurrent requests.
 
-```plantuml
-@startuml
-skinparam backgroundColor #FEFEFE
-skinparam componentStyle rectangle
+```mermaid
+flowchart TB
+    subgraph UI["User Interface"]
+        cli[CLI]
+        desktop[Desktop App<br/>Electron]
+        docker[Docker]
+    end
 
-package "User Interface" #E8F4FD {
-  [CLI] as cli
-  [Desktop App\n(Electron)] as desktop
-  [Docker] as docker
-}
+    subgraph Server["Ollama Server"]
+        httpserver[HTTP Server<br/>Go]
+        scheduler[Scheduler]
+        modelmanager[Model Manager]
+    end
 
-package "Ollama Server" #FDF2E9 {
-  [HTTP Server\n(Go)] as httpserver
-  [Scheduler] as scheduler
-  [Model Manager] as modelmanager
-}
+    subgraph Engine["Inference Engine"]
+        llamacpp[llama.cpp<br/>C++]
+        metal[Metal Backend]
+    end
 
-package "Inference Engine" #E9F7EF {
-  [llama.cpp\n(C++)] as llamacpp
-  [Metal Backend] as metal
-}
+    subgraph Storage["Storage"]
+        models[(GGUF Model Files)]
+    end
 
-database "Storage" #FDEDEC {
-  [GGUF Model Files] as models
-}
+    cli -->|HTTP| httpserver
+    desktop -->|HTTP| httpserver
+    docker -->|HTTP| httpserver
 
-cli --> httpserver : HTTP
-desktop --> httpserver : HTTP
-docker --> httpserver : HTTP
-
-httpserver --> scheduler
-scheduler --> modelmanager
-modelmanager --> llamacpp
-llamacpp --> metal : GPU Acceleration
-llamacpp --> models : Load weights
-
-@enduml
+    httpserver --> scheduler
+    scheduler --> modelmanager
+    modelmanager --> llamacpp
+    llamacpp -->|GPU Acceleration| metal
+    llamacpp -->|Load weights| models
 ```
 
 **Components explained:**
@@ -398,51 +393,42 @@ llamacpp --> models : Load weights
 
 When you run `ollama run llama3.1:8b`, here's what happens:
 
-```plantuml
-@startuml
-skinparam backgroundColor #FEFEFE
-skinparam sequenceMessageAlign center
+```mermaid
+sequenceDiagram
+    actor User
+    participant CLI
+    participant Server as HTTP Server<br/>(Go)
+    participant Scheduler
+    participant LLM as llama.cpp<br/>Server
 
-actor User as user
-participant "CLI" as cli
-participant "HTTP Server\n(Go)" as server
-participant "Scheduler" as scheduler
-participant "llama.cpp\nServer" as llm
+    User->>CLI: ollama run llama3.1:8b
+    activate CLI
 
-user -> cli: ollama run llama3.1:8b
-activate cli
+    CLI->>Server: POST /api/chat
+    activate Server
 
-cli -> server: POST /api/chat
-activate server
+    Server->>Scheduler: Queue request
+    activate Scheduler
 
-server -> scheduler: Queue request
-activate scheduler
+    Scheduler->>LLM: Load model<br/>(if not loaded)
+    activate LLM
 
-scheduler -> llm: Load model\n(if not loaded)
-activate llm
+    Scheduler->>LLM: GET /health
+    LLM-->>Scheduler: OK
 
-scheduler -> llm: GET /health
-llm --> scheduler: OK
+    Scheduler->>LLM: POST /completion
+    LLM-->>Scheduler: Stream tokens
 
-scheduler -> llm: POST /completion
-llm --> scheduler: Stream tokens
+    Scheduler-->>Server: Stream response
+    deactivate Scheduler
 
-scheduler --> server: Stream response
-deactivate scheduler
+    Server-->>CLI: Stream response
+    deactivate Server
 
-server --> cli: Stream response
-deactivate server
+    CLI-->>User: Display output
+    deactivate CLI
 
-cli --> user: Display output
-deactivate cli
-
-note right of llm
-  llama.cpp runs as a
-  separate process with
-  its own HTTP server
-end note
-
-@enduml
+    Note right of LLM: llama.cpp runs as a<br/>separate process with<br/>its own HTTP server
 ```
 
 **Key points:**
@@ -458,28 +444,23 @@ end note
 
 Ollama is written in Go, but uses llama.cpp (C++) for actual inference. CGO (C bindings for Go) bridges these two worlds:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Ollama (Go)                             │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │ HTTP Server │  │  Scheduler  │  │   Model Manager     │  │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
-│                           │                                  │
-│                           ▼                                  │
-│               ┌───────────────────────┐                      │
-│               │    CGO Interface      │                      │
-│               │  (C function calls)   │                      │
-│               └───────────────────────┘                      │
-└─────────────────────────│────────────────────────────────────┘
-                          │
-┌─────────────────────────│────────────────────────────────────┐
-│                         ▼                                    │
-│               ┌───────────────────────┐                      │
-│               │ ollama_llama_server   │                      │
-│               │  (Modified llama.cpp) │                      │
-│               └───────────────────────┘                      │
-│                     llama.cpp (C++)                          │
-└──────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Go["Ollama (Go)"]
+        httpserver2[HTTP Server]
+        scheduler2[Scheduler]
+        modelmanager2[Model Manager]
+        cgo[CGO Interface<br/>C function calls]
+
+        httpserver2 --- scheduler2 --- modelmanager2
+        scheduler2 --> cgo
+    end
+
+    subgraph Cpp["llama.cpp (C++)"]
+        llamaserver[ollama_llama_server<br/>Modified llama.cpp]
+    end
+
+    cgo --> llamaserver
 ```
 
 This design allows Ollama to:
@@ -491,53 +472,39 @@ This design allows Ollama to:
 
 Understanding how your prompt becomes a response:
 
-```plantuml
-@startuml
-skinparam backgroundColor #FEFEFE
-skinparam defaultTextAlignment center
+```mermaid
+flowchart TB
+    subgraph Input["Input Processing"]
+        prompt[User Prompt]
+        tokenizer[Tokenizer]
+        tokens["Token IDs<br/>[15496, 995, ...]"]
+    end
 
-rectangle "Input Processing" #E8F4FD {
-  rectangle "User Prompt" as prompt
-  rectangle "Tokenizer" as tokenizer
-  rectangle "Token IDs\n[15496, 995, ...]" as tokens
-}
+    subgraph Inference["Model Inference"]
+        embed["Embedding Layer<br/>(token → vector)"]
+        transformer["Transformer Blocks<br/>(32 layers for 8B)"]
+        output["Output Layer<br/>(vector → logits)"]
+    end
 
-rectangle "Model Inference" #FDF2E9 {
-  rectangle "Embedding Layer\n(token → vector)" as embed
-  rectangle "Transformer Blocks\n(32 layers for 8B)" as transformer
-  rectangle "Output Layer\n(vector → logits)" as output
-}
+    subgraph Output["Output Processing"]
+        sampling["Sampling<br/>(temperature, top_p)"]
+        detok[Detokenizer]
+        response[Text Response]
+    end
 
-rectangle "Output Processing" #E9F7EF {
-  rectangle "Sampling\n(temperature, top_p)" as sampling
-  rectangle "Detokenizer" as detok
-  rectangle "Text Response" as response
-}
-
-prompt -down-> tokenizer : "Hello world"
-tokenizer -down-> tokens
-tokens -down-> embed
-embed -down-> transformer
-transformer -down-> output
-output -down-> sampling : probability\ndistribution
-sampling -down-> detok : selected\ntoken ID
-detok -down-> response : "Hi there!"
-
-note right of transformer
-  Each transformer block:
-  1. Self-attention
-  2. Feed-forward network
-  3. Layer normalization
-end note
-
-note right of sampling
-  Controls randomness:
-  - temperature=0: always pick highest prob
-  - temperature=1: sample from distribution
-end note
-
-@enduml
+    prompt -->|"Hello world"| tokenizer
+    tokenizer --> tokens
+    tokens --> embed
+    embed --> transformer
+    transformer --> output
+    output -->|probability<br/>distribution| sampling
+    sampling -->|selected<br/>token ID| detok
+    detok -->|"Hi there!"| response
 ```
+
+> **Transformer block:** Each of the 32 layers performs self-attention, feed-forward network, and layer normalization.
+
+> **Sampling:** Controls randomness - temperature=0 always picks highest probability, temperature=1 samples from distribution.
 
 **Step-by-step breakdown:**
 
@@ -556,52 +523,42 @@ This process repeats for each output token (autoregressive generation).
 
 Apple Silicon provides unique advantages for local LLM inference:
 
-```plantuml
-@startuml
-skinparam backgroundColor #FEFEFE
+```mermaid
+flowchart TB
+    subgraph Mac["M1 Mac"]
+        subgraph macOS["macOS"]
+            ollama[Ollama Server]
+            llama[llama.cpp]
+        end
 
-node "M1 Mac" as mac {
+        subgraph SoC["Apple Silicon SoC"]
+            subgraph CPU["CPU"]
+                perf["Performance Cores<br/>(4x high power)"]
+                eff["Efficiency Cores<br/>(4x low power)"]
+            end
 
-  package "macOS" #E8F4FD {
-    [Ollama Server] as ollama
-    [llama.cpp] as llama
-  }
+            subgraph GPU["GPU"]
+                gpucores["GPU Cores<br/>(7-8 on M1)"]
+                metal[Metal Framework]
+            end
 
-  package "Apple Silicon SoC" #FDF2E9 {
+            subgraph Memory["Memory"]
+                umem["Unified Memory<br/>(8-16GB)"]
+            end
 
-    rectangle "CPU" #E9F7EF {
-      [Performance Cores\n(4x high power)] as perf
-      [Efficiency Cores\n(4x low power)] as eff
-    }
+            subgraph Other["Other"]
+                ne["Neural Engine<br/>(16 cores)"]
+            end
+        end
+    end
 
-    rectangle "GPU" #FDEDEC {
-      [GPU Cores\n(7-8 on M1)] as gpu
-      [Metal Framework] as metal
-    }
-
-    rectangle "Memory" #F4ECF7 {
-      [Unified Memory\n(8-16GB)] as umem
-    }
-
-    rectangle "Other" #FEF9E7 {
-      [Neural Engine\n(16 cores)] as ne
-    }
-  }
-}
-
-llama --> perf : CPU inference
-llama --> metal : GPU offload
-metal --> gpu
-llama <--> umem : Zero-copy\naccess
-
-note bottom of umem
-  Unified Memory Architecture:
-  CPU and GPU share the same
-  memory pool - no copying needed
-end note
-
-@enduml
+    llama -->|CPU inference| perf
+    llama -->|GPU offload| metal
+    metal --> gpucores
+    llama <-->|Zero-copy access| umem
 ```
+
+> **Unified Memory Architecture:** CPU and GPU share the same memory pool - no copying needed.
 
 **M1 advantages for LLMs:**
 
@@ -627,36 +584,28 @@ end note
 
 Understanding how Ollama distributes model layers between CPU and GPU memory:
 
-```plantuml
-@startuml
-skinparam backgroundColor #FEFEFE
+```mermaid
+flowchart TB
+    subgraph Model["Model: Llama 3.1 8B (32 layers)"]
+        subgraph GPUMem["GPU Memory (Metal)"]
+            gpu_layers[Layers 0-24]
+            gpu_size["~3.5 GB"]
+        end
 
-rectangle "Model: Llama 3.1 8B (32 layers)" #F5F5F5 {
+        subgraph CPUMem["CPU Memory (RAM)"]
+            cpu_layers[Layers 25-31]
+            embeddings[Embeddings]
+            cpu_size["~1.5 GB"]
+        end
 
-  rectangle "GPU Memory (Metal)" #E9F7EF {
-    rectangle "Layers 0-24" as gpu_layers
-    rectangle "~3.5 GB" as gpu_size
-  }
-
-  rectangle "CPU Memory (RAM)" #E8F4FD {
-    rectangle "Layers 25-31" as cpu_layers
-    rectangle "Embeddings" as embeddings
-    rectangle "~1.5 GB" as cpu_size
-  }
-
-  rectangle "KV Cache" #FDF2E9 {
-    rectangle "Context Storage" as kv
-    rectangle "~0.5-2 GB\n(varies with context)" as kv_size
-  }
-}
-
-note bottom of gpu_layers
-  More GPU layers = faster inference
-  Controlled by OLLAMA_NUM_GPU
-end note
-
-@enduml
+        subgraph KVCache["KV Cache"]
+            kv[Context Storage]
+            kv_size["~0.5-2 GB<br/>(varies with context)"]
+        end
+    end
 ```
+
+> **Note:** More GPU layers = faster inference. Controlled by `OLLAMA_NUM_GPU`.
 
 **Memory allocation strategy:**
 
@@ -698,70 +647,48 @@ For Llama 3.1 8B with 32K context:
 
 Ollama uses GGUF (GPT-Generated Unified Format), optimized for local inference:
 
-```plantuml
-@startuml
-skinparam backgroundColor #FEFEFE
-skinparam classAttributeIconSize 0
+```mermaid
+classDiagram
+    class GGUF_File {
+        magic: "GGUF" (4 bytes)
+        version: uint32
+        tensor_count: uint64
+        metadata_kv_count: uint64
+        metadata[]
+        tensors[]
+    }
 
-class "GGUF File" as gguf {
-  magic: "GGUF" (4 bytes)
-  version: uint32
-  tensor_count: uint64
-  metadata_kv_count: uint64
-  --
-  metadata[]
-  tensors[]
-}
+    class Metadata {
+        general.architecture: "llama"
+        general.name: "Llama 3.1 8B"
+        llama.context_length: 131072
+        llama.embedding_length: 4096
+        llama.block_count: 32
+        tokenizer.ggml.model: "gpt2"
+        tokenizer.ggml.tokens: [...]
+    }
 
-class "Metadata" as meta {
-  general.architecture: "llama"
-  general.name: "Llama 3.1 8B"
-  llama.context_length: 131072
-  llama.embedding_length: 4096
-  llama.block_count: 32
-  tokenizer.ggml.model: "gpt2"
-  tokenizer.ggml.tokens: [...]
-}
+    class Tensor {
+        name: string
+        dimensions: uint32[]
+        type: ggml_type
+        offset: uint64
+        data: float[] (quantized)
+    }
 
-class "Tensor" as tensor {
-  name: string
-  dimensions: uint32[]
-  type: ggml_type
-  offset: uint64
-  --
-  data: float[] (quantized)
-}
+    class Quantization_Types {
+        Q4_K_M (recommended) ~4.5 bits/weight
+        Q5_K_M ~5.5 bits/weight
+        Q8_0 8 bits/weight
+        F16 16 bits/weight
+    }
 
-class "Quantization Types" as quant {
-  **Q4_K_M** (recommended)
-  ~4.5 bits/weight
-  Good quality/size balance
-  --
-  Q5_K_M
-  ~5.5 bits/weight
-  Better quality, larger
-  --
-  Q8_0
-  8 bits/weight
-  Near-original quality
-  --
-  F16
-  16 bits/weight
-  Full precision
-}
-
-gguf *-- meta
-gguf *-- tensor
-tensor -- quant
-
-note right of quant
-  Lower quantization =
-  smaller file, faster,
-  but reduced quality
-end note
-
-@enduml
+    GGUF_File *-- Metadata
+    GGUF_File *-- Tensor
+    Tensor -- Quantization_Types
 ```
+
+> **Quantization trade-off:** Lower quantization = smaller file, faster inference, but reduced quality.
 
 **Why GGUF matters:**
 
@@ -774,42 +701,33 @@ end note
 
 Ollama can handle multiple requests and models efficiently:
 
-```plantuml
-@startuml
-skinparam backgroundColor #FEFEFE
+```mermaid
+flowchart LR
+    subgraph Scheduler["Ollama Scheduler"]
+        subgraph Queue["Request Queue"]
+            r1[Request 1]
+            r2[Request 2]
+            r3[Request 3]
+        end
 
-rectangle "Ollama Scheduler" as sched {
+        subgraph Runners["Active Runners"]
+            runner1["llama3.1:8b<br/>Runner"]
+            runner2["codellama:7b<br/>Runner"]
+        end
 
-  rectangle "Request Queue" #E8F4FD {
-    [Request 1] as r1
-    [Request 2] as r2
-    [Request 3] as r3
-  }
+        subgraph Config["Configuration"]
+            c1[Max Parallel: 4]
+            c2[Session Timeout: 5min]
+            c3[GPU Layers: auto]
+        end
+    end
 
-  rectangle "Active Runners" #E9F7EF {
-    [llama3.1:8b\nRunner] as runner1
-    [codellama:7b\nRunner] as runner2
-  }
-
-  rectangle "Configuration" #FDF2E9 {
-    [Max Parallel: 4]
-    [Session Timeout: 5min]
-    [GPU Layers: auto]
-  }
-}
-
-r1 --> runner1
-r2 --> runner1
-r3 --> runner2
-
-note bottom of sched
-  Semaphore limits concurrent
-  requests per model based on
-  available memory and numParallel
-end note
-
-@enduml
+    r1 --> runner1
+    r2 --> runner1
+    r3 --> runner2
 ```
+
+> **Semaphore:** Limits concurrent requests per model based on available memory and `numParallel` setting.
 
 **Scheduling behavior:**
 
